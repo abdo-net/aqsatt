@@ -1,0 +1,3049 @@
+ <|tool_calls_section_begin|> <|tool_call_begin|> ipython:11 <|tool_call_argument_begin|> {"code": "\nimport os\n\nbase = \"/mnt/agents/output/aqsatt/ccs_full\"\n\n# Read all Python files\npy_files = [\n    \"app/core/config.py\",\n    \"app/core/deps.py\",\n    \"app/core/errors.py\",\n    \"app/core/pagination.py\",\n    \"app/core/security.py\",\n    \"app/db/base.py\",\n    \"app/db/seed.py\",\n    \"app/events/dispatcher.py\",\n    \"app/main.py\",\n    \"app/models/__init__.py\",\n    \"app/schemas.py\",\n    \"app/routers/auth.py\",\n    \"app/routers/account.py\",\n    \"app/routers/admin.py\",\n    \"app/routers/categories.py\",\n    \"app/routers/customers.py\",\n    \"app/routers/dashboard.py\",\n    \"app/routers/installments.py\",\n    \"app/routers/ledger.py\",\n    \"app/routers/notifications.py\",\n    \"app/routers/payments.py\",\n    \"app/routers/products.py\",\n    \"app/routers/sales.py\",\n    \"app/services/event_service.py\",\n    \"app/services/image_service.py\",\n    \"app/services/ledger_service.py\",\n    \"app/services/payment_service.py\",\n    \"app/services/sale_service.py\",\n    \"app/services/sequence_service.py\",\n    \"jobs/overdue_job.py\",\n    \"alembic/versions/287d370eafcb_initial_schema.py\",\n    \"alembic/versions/a1b2c3d4e5f6_catalog_extension.py\",\n    \"alembic/versions/b2c3d4e5f6a7_sale_item_variant.py\",\n    \"requirements.txt\",\n    \".env.example\",\n    \"gunicorn_conf.py\",\n    \"deploy/systemd_units.txt\",\n]\n\nfor f in py_files:\n    path = os.path.join(base, f)\n    if os.path.exists(path):\n        with open(path, 'r', encoding='utf-8') as fh:\n            content = fh.read()\n        print(f\"\\n{'='*80}\")\n        print(f\"FILE: {f}\")\n        print(f\"{'='*80}\")\n        print(content)\n    else:\n        print(f\"\\n{'='*80}\")\n        print(f\"FILE NOT FOUND: {f}\")\n        print(f\"{'='*80}\")\n"} <|tool_call_end|> <|tool_calls_section_end|>
+
+
+
+//////////
+
+ <|tool_calls_section_begin|> <|tool_call_begin|> ipython:22 <|tool_call_argument_begin|> {"code": "\n# Read remaining files individually\nbase = \"/mnt/agents/output/aqsatt/ccs_full\"\n\nfor f in [\"app/routers/ledger.py\", \"app/routers/notifications.py\", \"app/routers/payments.py\", \"app/routers/products.py\", \"app/routers/sales.py\"]:\n    with open(os.path.join(base, f), \"r\", encoding=\"utf-8\") as fh:\n        content = fh.read()\n    print(f\"\\n{'='*80}\\nFILE: {f}\\n{'='*80}\")\n    print(content)\n"} <|tool_call_end|> <|tool_calls_section_end|>
+///////////
+
+
+
+ Based on my complete reverse-engineering of the **aqsatt** (Credit Commerce System) repository, I have extracted every entity, relationship, business rule, API contract, and constraint. Below is the **FULL SYSTEM SPECIFICATION** — a precise, production-grade document that can be handed directly to frontend engineers.
+
+---
+
+# AQSAṬṬ — FULL SYSTEM SPECIFICATION
+## Credit Commerce System (نظام الأقساط)
+
+---
+
+## 1. SYSTEM OVERVIEW
+
+| Attribute | Value |
+|-----------|-------|
+| **Backend** | FastAPI (Python) + SQLAlchemy 2.0 (Mapped declarative) |
+| **Database** | PostgreSQL 15+ with Row-Level Security (RLS) |
+| **Auth** | JWT Bearer tokens (HS256), permission-based RBAC |
+| **Tenancy** | Single-database multi-tenant via `app.tenant_id` GUC + RLS policies |
+| **Architecture** | Transactional outbox (domain events), double-entry ledger, soft-delete everywhere |
+| **Currency** | IQD (Iraqi Dinar) — all monetary values are **integer fils** (no floats) |
+
+---
+
+## 2. DATA MODEL (ENTITIES & RELATIONSHIPS)
+
+### 2.1 Entity Relationship Diagram (Textual)
+
+```
+┌─────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│   Tenant    │◄────┤  TenantSetting  │     │ TenantSequence   │
+│  (platform) │     └─────────────────┘     └──────────────────┘
+└──────┬──────┘
+       │
+       ├──► ┌─────────────┐     ┌─────────────────┐
+       │    │   Category  │◄────┤    Product      │
+       │    └─────────────┘     └────────┬────────┘
+       │                                 │
+       │                    ┌────────────┼────────────┐
+       │                    ▼            ▼            ▼
+       │              ┌─────────┐  ┌──────────┐  ┌──────────┐
+       │              │ Variant │  │  Image   │  │ SaleItem │
+       │              └────┬────┘  └──────────┘  └────┬─────┘
+       │                   │                          │
+       │                   └────────────┬───────────────┘
+       │                              │
+       │                    ┌─────────▼─────────┐
+       │                    │      Sale         │
+       │                    │  (cash/install)   │
+       │                    └─────────┬─────────┘
+       │                              │
+       │         ┌──────────────────┼──────────────────┐
+       │         ▼                  ▼                  ▼
+       │   ┌─────────────┐   ┌──────────────┐   ┌─────────────┐
+       │   │InstallmentPlan│  │  Payment     │   │  LedgerEntry │
+       │   │  (revisioned) │  │  (reversible)│   │ (double-entry)│
+       │   └──────┬────────┘  └──────┬───────┘   └─────────────┘
+       │          │                  │
+       │          ▼                  ▼
+       │   ┌─────────────┐     ┌──────────────┐
+       │   │ Installment │◄────┤PaymentAllocation│
+       │   │ (scheduled) │     │  (FIFO link)   │
+       │   └─────────────┘     └──────────────┘
+       │
+       ├──► ┌─────────────┐     ┌─────────────┐
+       │    │   Customer  │     │    User     │
+       │    │  (risk class)│     │  (RBAC)     │
+       │    └─────────────┘     └──────┬──────┘
+       │                               │
+       │                    ┌─────────┼─────────┐
+       │                    ▼         ▼         ▼
+       │              ┌────────┐  ┌───────┐  ┌─────────┐
+       │              │  Role  │  │Permission│ │UserRole │
+       │              └────────┘  └───────┘  └─────────┘
+       │
+       └──► ┌─────────────┐     ┌─────────────────┐
+            │   Account   │     │  DomainEvent    │
+            │ (COA: 1000) │     │ (outbox pattern)│
+            └─────────────┘     └─────────────────┘
+```
+
+---
+
+### 2.2 Core Entities — Full Field Specifications
+
+#### **Tenant** (Platform-level, NOT RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK, auto-increment | — |
+| `public_id` | UUID | unique, `gen_random_uuid()` | generated |
+| `parent_tenant_id` | BigInteger | FK → tenants.id, nullable | null |
+| `name` | String(120) | NOT NULL | — |
+| `slug` | String(60) | NOT NULL, unique | — |
+| `type` | String(12) | CHECK IN ('store','reseller') | `'store'` |
+| `currency_code` | CHAR(3) | NOT NULL | `'IQD'` |
+| `timezone` | String(40) | NOT NULL | `'Asia/Baghdad'` |
+| `status` | String(12) | CHECK IN ('active','suspended') | `'active'` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | `server_default=now()`, NOT NULL | now |
+
+---
+
+#### **User** (App-scoped, NOT RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `public_id` | UUID | unique, generated |
+| `home_tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `name` | String(100) | NOT NULL |
+| `username` | String(50) | NOT NULL, unique |
+| `password_hash` | String(255) | NOT NULL (bcrypt) |
+| `is_active` | Boolean | NOT NULL, default `true` |
+| `is_deleted` | Boolean | NOT NULL, default `false` |
+| `deleted_at` | DateTime(tz) | nullable |
+| `created_at` | DateTime(tz) | NOT NULL |
+| `updated_at` | DateTime(tz) | NOT NULL |
+
+---
+
+#### **Customer** (RLS-scoped DATA table)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `full_name` | String(150) | NOT NULL | — |
+| `phone` | String(20) | NOT NULL | — |
+| `alt_phone` | String(20) | nullable | null |
+| `national_id` | String(30) | nullable | null |
+| `address` | Text | nullable | null |
+| `notes` | Text | nullable | null |
+| `risk_class` | String(10) | CHECK IN ('trusted','qi','mixed') | `'trusted'` |
+| `status` | String(10) | CHECK IN ('active','blocked') | `'active'` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(tenant_id, phone)` unique WHERE `is_deleted = false` (partial index)
+
+---
+
+#### **Category** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `name` | String(100) | NOT NULL |
+| `name_ar` | String(100) | NOT NULL |
+| `is_deleted` | Boolean | NOT NULL, default `false` |
+| `deleted_at` | DateTime(tz) | nullable |
+
+---
+
+#### **Product** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sku` | String(50) | NOT NULL | — |
+| `name` | String(150) | NOT NULL | — |
+| `name_ar` | String(150) | NOT NULL | — |
+| `category_id` | BigInteger | FK → categories.id, nullable | null |
+| `base_price` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `stock_quantity` | Integer | NOT NULL, CHECK >= 0 | `0` |
+| `description` | Text | nullable | null |
+| `brand` | String(100) | nullable | null |
+| `tags` | String(300) | nullable | null |
+| `status` | String(20) | NOT NULL | `'active'` |
+| `is_active` | Boolean | NOT NULL | `true` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(tenant_id, sku)` unique WHERE `is_deleted = false` (partial index)
+
+---
+
+#### **ProductVariant** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `product_id` | BigInteger | FK → products.id, NOT NULL | — |
+| `sku` | String(60) | NOT NULL | — |
+| `price_cash` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `price_installment` | BigInteger | nullable | null |
+| `compare_price` | BigInteger | nullable | null |
+| `cost_price` | BigInteger | nullable | null |
+| `stock_quantity` | Integer | NOT NULL, CHECK >= 0 | `0` |
+| `attributes` | JSONB | nullable | null |
+| `is_default` | Boolean | NOT NULL | `false` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(tenant_id, sku)` unique WHERE `is_deleted = false`
+
+---
+
+#### **ProductImage** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `product_id` | BigInteger | FK → products.id, NOT NULL | — |
+| `variant_id` | BigInteger | FK → product_variants.id, nullable | null |
+| `path` | String(300) | NOT NULL | — |
+| `thumb_path` | String(300) | nullable | null |
+| `sort_order` | Integer | NOT NULL | `0` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+---
+
+#### **Sale** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sale_number` | String(20) | NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, NOT NULL | — |
+| `sale_type` | String(12) | CHECK IN ('cash','installment') | — |
+| `sale_channel` | String(10) | CHECK IN ('store','online','agent') | `'store'` |
+| `salesperson_id` | BigInteger | FK → users.id, nullable | null |
+| `subtotal` | BigInteger | NOT NULL | — |
+| `discount_amount` | BigInteger | NOT NULL | `0` |
+| `total_price` | BigInteger | NOT NULL | — |
+| `down_payment` | BigInteger | NOT NULL | `0` |
+| `status` | String(12) | CHECK IN ('active','completed','cancelled') | `'active'` |
+| `notes` | Text | nullable | null |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Check Constraints:**
+- `total_price = subtotal - discount_amount`
+- `down_payment < total_price`
+
+**Unique Constraint:** `(tenant_id, sale_number)` unique WHERE `is_deleted = false`
+
+---
+
+#### **SaleItem** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sale_id` | BigInteger | FK → sales.id, NOT NULL | — |
+| `product_id` | BigInteger | FK → products.id, NOT NULL | — |
+| `variant_id` | BigInteger | FK → product_variants.id, nullable | null |
+| `name_snapshot` | String(150) | NOT NULL | — |
+| `name_ar_snapshot` | String(150) | NOT NULL | — |
+| `quantity` | Integer | NOT NULL, CHECK > 0 | — |
+| `unit_price` | BigInteger | NOT NULL | — |
+| `item_discount` | BigInteger | NOT NULL | `0` |
+| `line_total` | BigInteger | NOT NULL | — |
+
+**Check Constraint:** `line_total = unit_price * quantity - item_discount`
+
+---
+
+#### **InstallmentPlan** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sale_id` | BigInteger | FK → sales.id, NOT NULL | — |
+| `revision` | Integer | NOT NULL | `1` |
+| `supersedes_plan_id` | BigInteger | FK → installment_plans.id, nullable | null |
+| `principal_amount` | BigInteger | NOT NULL | — |
+| `months` | Integer | NOT NULL | — |
+| `monthly_amount` | BigInteger | NOT NULL | — |
+| `frequency` | String(10) | NOT NULL | `'monthly'` |
+| `start_date` | Date | NOT NULL | — |
+| `end_date` | Date | NOT NULL | — |
+| `status` | String(12) | CHECK IN ('active','completed','defaulted','cancelled','superseded') | `'active'` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(sale_id, revision)` unique
+
+**Relationship:** `plan.installments` → list[Installment] (backref)
+
+---
+
+#### **Installment** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `plan_id` | BigInteger | FK → installment_plans.id, NOT NULL | — |
+| `installment_number` | Integer | NOT NULL | — |
+| `due_date` | Date | NOT NULL | — |
+| `amount` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `status` | String(12) | CHECK IN ('scheduled','cancelled') | `'scheduled'` |
+| `late_days` | Integer | NOT NULL | `0` |
+| `last_payment_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(plan_id, installment_number)` unique
+
+**Index:** `idx_inst_due` on `due_date` WHERE `status = 'scheduled'`
+
+---
+
+#### **PlanRevision** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `plan_id` | BigInteger | FK → installment_plans.id, NOT NULL |
+| `new_plan_id` | BigInteger | FK → installment_plans.id, NOT NULL |
+| `old_months` | Integer | NOT NULL |
+| `new_months` | Integer | NOT NULL |
+| `reason` | Text | NOT NULL |
+| `created_by` | BigInteger | FK → users.id, NOT NULL |
+| `created_at` | DateTime(tz) | NOT NULL |
+
+---
+
+#### **Payment** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `receipt_number` | String(20) | NOT NULL | — |
+| `idempotency_key` | String(80) | NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, NOT NULL | — |
+| `sale_id` | BigInteger | FK → sales.id, NOT NULL | — |
+| `amount` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `fee_amount` | BigInteger | NOT NULL, CHECK >= 0 | `0` |
+| `payment_method` | String(15) | CHECK IN ('cash','qi','transfer','zaincash','visa') | — |
+| `status` | String(12) | CHECK IN ('pending','confirmed','failed','reversed') | `'confirmed'` |
+| `reference_number` | String(100) | nullable | null |
+| `source` | String(10) | CHECK IN ('manual','api','external') | `'manual'` |
+| `received_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `reversed_payment_id` | BigInteger | FK → payments.id, nullable | null |
+| `transaction_group_id` | UUID | NOT NULL | — |
+| `paid_at` | DateTime(tz) | NOT NULL | now |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraints:**
+- `(tenant_id, idempotency_key)` unique
+- `(tenant_id, receipt_number)` unique
+
+---
+
+#### **PaymentAllocation** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `payment_id` | BigInteger | FK → payments.id, NOT NULL |
+| `installment_id` | BigInteger | FK → installments.id, NOT NULL |
+| `amount` | BigInteger | NOT NULL, CHECK > 0 |
+
+**Indexes:** `idx_alloc_inst` (installment_id), `idx_alloc_pay` (payment_id)
+
+---
+
+#### **Account** (Chart of Accounts — RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `code` | String(10) | NOT NULL |
+| `name` | String(100) | NOT NULL |
+| `name_ar` | String(100) | NOT NULL |
+| `type` | String(10) | CHECK IN ('asset','liability','equity','revenue','expense') |
+| `normal_balance` | String(6) | CHECK IN ('debit','credit') |
+
+**Unique:** `(tenant_id, code)`
+
+**Seed Accounts:**
+| Code | Name | Name AR | Type | Normal Balance |
+|------|------|---------|------|----------------|
+| 1000 | Cash | النقد | asset | debit |
+| 1100 | Accounts Receivable | الذمم المدينة | asset | debit |
+| 4000 | Sales Revenue | إيرادات المبيعات | revenue | credit |
+| 5000 | Provider Fees Expense | رسوم المزوّد | expense | debit |
+
+---
+
+#### **LedgerEntry** (RLS-scoped, append-only)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `transaction_group_id` | UUID | NOT NULL | — |
+| `account_id` | BigInteger | FK → accounts.id, NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, nullable | null |
+| `sale_id` | BigInteger | FK → sales.id, nullable | null |
+| `debit_amount` | BigInteger | NOT NULL | `0` |
+| `credit_amount` | BigInteger | NOT NULL | `0` |
+| `reference_type` | String(20) | CHECK IN ('sale','payment','reversal','reschedule') | — |
+| `reference_id` | BigInteger | NOT NULL | — |
+| `description` | String(255) | nullable | null |
+| `reversed_entry_id` | BigInteger | FK → ledger_entries.id, nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Check Constraint:** `(debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0)`
+
+---
+
+#### **DomainEvent** (RLS-scoped, transactional outbox)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `event_type` | String(40) | NOT NULL | — |
+| `entity_type` | String(30) | NOT NULL | — |
+| `entity_id` | BigInteger | NOT NULL | — |
+| `payload` | JSONB | NOT NULL | — |
+| `status` | String(10) | CHECK IN ('pending','processed','failed') | `'pending'` |
+| `attempts` | Integer | NOT NULL | `0` |
+| `last_error` | Text | nullable | null |
+| `processed_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+---
+
+#### **AuditLog** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `entity_type` | String(30) | NOT NULL |
+| `entity_id` | BigInteger | NOT NULL |
+| `action` | String(20) | CHECK IN ('create','update','delete','reschedule') |
+| `old_data` | JSONB | nullable |
+| `new_data` | JSONB | nullable |
+| `changed_by` | BigInteger | FK → users.id, NOT NULL |
+| `created_at` | DateTime(tz) | NOT NULL |
+
+---
+
+#### **Notification** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, NOT NULL | — |
+| `channel` | String(10) | CHECK IN ('sms','whatsapp') | — |
+| `message` | Text | NOT NULL | — |
+| `related_type` | String(20) | NOT NULL | — |
+| `related_id` | BigInteger | NOT NULL | — |
+| `status` | String(10) | CHECK IN ('pending','sent','failed') | `'pending'` |
+| `sent_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+---
+
+#### **CollectionLog** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `installment_id` | BigInteger | FK → installments.id, NOT NULL |
+| `action` | String(30) | CHECK IN ('marked_late','notification_sent','manual_note') |
+| `notes` | Text | nullable |
+| `created_by` | BigInteger | FK → users.id, nullable |
+| `created_at` | DateTime(tz) | NOT NULL |
+
+---
+
+### 2.3 Relationships Summary
+
+| Parent | Child | Type | Key |
+|--------|-------|------|-----|
+| Tenant | Customer | 1:N | `tenant_id` |
+| Tenant | Product | 1:N | `tenant_id` |
+| Tenant | Category | 1:N | `tenant_id` |
+| Tenant | Sale | 1:N | `tenant_id` |
+| Tenant | InstallmentPlan | 1:N | `tenant_id` |
+| Tenant | Payment | 1:N | `tenant_id` |
+| Tenant | Account | 1:N | `tenant_id` |
+| Tenant | LedgerEntry | 1:N | `tenant_id` |
+| Product | ProductVariant | 1:N | `product_id` |
+| Product | ProductImage | 1:N | `product_id` |
+| Product | SaleItem | 1:N | `product_id` |
+| ProductVariant | SaleItem | 1:N | `variant_id` |
+| ProductVariant | ProductImage | 1:N | `variant_id` |
+| Category | Product | 1:N | `category_id` |
+| Customer | Sale | 1:N | `customer_id` |
+| Customer | Payment | 1:N | `customer_id` |
+| Customer | LedgerEntry | 1:N | `customer_id` |
+| Sale | SaleItem | 1:N | `sale_id` |
+| Sale | InstallmentPlan | 1:1 (active) | `sale_id` |
+| Sale | Payment | 1:N | `sale_id` |
+| InstallmentPlan | Installment | 1:N | `plan_id` |
+| InstallmentPlan | PlanRevision | 1:N | `plan_id` |
+| Installment | PaymentAllocation | 1:N | `installment_id` |
+| Payment | PaymentAllocation | 1:N | `payment_id` |
+| User | Sale | 1:N | `created_by` |
+| User | Payment | 1:N | `received_by`, `created_by` |
+
+---
+
+## 3. BUSINESS LOGIC SPECIFICATION
+
+### 3.1 Sale Creation Flow (`sale_service.create_sale`)
+
+```
+INPUT: items[], sale_type, customer_id, discount_amount, down_payment, months, frequency, start_date
+```
+
+**Step 1 — Customer Validation:**
+- Customer must exist, not deleted, status = `'active'`
+- If `sale_type == 'installment'`:
+  - `months` required and >= 1
+  - `frequency` must be `'weekly'` or `'monthly'`
+  - `start_date` required
+
+**Step 2 — Item Validation & Stock Deduction:**
+For each item in `items[]`:
+- Fetch product with `FOR UPDATE` lock
+- If `variant_id` provided: validate variant belongs to product, not deleted
+- If no `variant_id`: fall back to default variant (`is_default = true`)
+- If no variants at all: use product-level price/stock (legacy)
+- Check stock >= quantity
+- `unit_price` = variant.price_cash (or product.base_price)
+- `item_discount` defaults to 0
+- `line_total = unit_price * quantity - item_discount` (must be > 0)
+- Deduct stock from variant (or product)
+- If variant: recalculate product.stock_quantity = SUM(all variant stocks)
+
+**Step 3 — Totals:**
+- `subtotal = SUM(line_total)`
+- `total_price = subtotal - discount_amount` (must be > 0)
+- If installment: `0 <= down_payment < total_price`
+- If cash: `down_payment = 0`
+
+**Step 4 — Sale Number Generation:**
+- `sale_number = format_number("S", next_number(tenant_id, "sale"))`
+- Format: `S-YYYY-NNNNNN` (e.g., `S-2026-000042`)
+
+**Step 5 — Ledger Posting (Sale Recognition):**
+```
+Dr 1100 (AR)        total_price
+    Cr 4000 (Revenue)   total_price
+```
+
+**Step 6 — Cash Sale Path:**
+- Auto-create full payment (receipt `R-YYYY-NNNNNN`)
+- Ledger: Dr 1000 (Cash), Cr 1100 (AR)
+- Sale.status = `'completed'`
+
+**Step 7 — Installment Sale Path:**
+- `principal = total_price - down_payment`
+- `base = principal // months` (integer division)
+- `remainder = principal - base * months`
+- If `base <= 0`: reject (too many months / too little down payment)
+- Create InstallmentPlan:
+  - `revision = 1`
+  - `monthly_amount = base`
+  - `end_date = _due(start_date, months - 1, frequency)`
+- Create Installment rows:
+  - For k in 0..months-1:
+    - `due_date = _due(start_date, k, frequency)`
+    - `amount = base + (remainder if k == months-1 else 0)`
+- If `down_payment > 0`: auto-create down payment (same as cash sale)
+
+**Due Date Calculation:**
+```python
+def _add_months(d, m):
+    total = d.month - 1 + m
+    y = d.year + total // 12
+    mo = total % 12 + 1
+    return date(y, mo, min(d.day, calendar.monthrange(y, mo)[1]))
+
+def _due(start, idx, freq):
+    if freq == "weekly":
+        return start + 7*idx days
+    else:
+        return _add_months(start, idx)
+```
+
+---
+
+### 3.2 Payment Recording Flow (`payment_service.record_payment`)
+
+```
+INPUT: sale_id, amount, payment_method, idempotency_key
+```
+
+**Step 1 — Idempotency:**
+- Check existing payment by `(tenant_id, idempotency_key)`
+- If found: return existing with `replayed: true`
+
+**Step 2 — Sale Validation:**
+- Sale must exist, not deleted, status = `'active'`
+
+**Step 3 — Fee Calculation:**
+```python
+FEE_BY_METHOD = {"cash": 0, "qi": 0, "transfer": 0, "zaincash": 0, "visa": 0}
+fee = FEE_BY_METHOD.get(payment_method, 0)
+```
+- `amount > fee` required
+
+**Step 4 — Receipt Generation:**
+- `receipt_number = format_number("R", next_number(tenant_id, "receipt"))`
+- Format: `R-YYYY-NNNNNN`
+
+**Step 5 — Payment Creation:**
+- `status = 'confirmed'`
+- `transaction_group_id = uuid4()`
+
+**Step 6 — FIFO Allocation to Installments:**
+- Fetch all `scheduled` installments for active plan, ordered by `installment_number`
+- For each: calculate `outstanding = amount - SUM(confirmed allocations)`
+- If `amount > total_outstanding`: reject overpayment
+- Allocate sequentially (FIFO):
+  ```python
+  for installment in scheduled_installments:
+      if remaining <= 0: break
+      apply = min(remaining, outstanding)
+      create PaymentAllocation(payment_id, installment_id, apply)
+      installment.last_payment_at = now()
+      remaining -= apply
+  ```
+- Assert `remaining == 0`
+
+**Step 7 — Ledger Posting:**
+- If fee == 0:
+  ```
+  Dr 1000 (Cash)      amount
+      Cr 1100 (AR)        amount
+  ```
+- If fee > 0:
+  ```
+  Dr 1000 (Cash)      amount - fee
+  Dr 5000 (Fee Exp)   fee
+      Cr 1100 (AR)        amount
+  ```
+
+**Step 8 — Completion Check:**
+- `sale_outstanding = SUM(all scheduled installment amounts) - SUM(all confirmed allocations)`
+- If `sale_outstanding == 0`:
+  - `plan.status = 'completed'`
+  - `sale.status = 'completed'`
+
+---
+
+### 3.3 Installment State Derivation (`payment_service.installment_state`)
+
+```python
+def installment_state(inst):
+    paid = SUM(confirmed allocations)
+    remaining = inst.amount - paid
+    
+    if inst.status == "cancelled":
+        return "cancelled"
+    elif remaining <= 0:
+        return "paid"
+    elif inst.due_date < today:
+        return "late"
+    elif paid > 0:
+        return "partially_paid"
+    else:
+        return "pending"
+```
+
+**Derived statuses (NOT stored):** `paid`, `late`, `partially_paid`, `pending`
+
+---
+
+### 3.4 Overdue Job (`jobs/overdue_job.py`)
+
+**Runs daily via cron/systemd.**
+
+For each active tenant:
+1. Find all `scheduled` installments with `due_date < today`
+2. Skip if fully paid (`paid >= amount`)
+3. Update `late_days = (today - due_date).days`
+4. Create `CollectionLog` (action=`'marked_late'`) — idempotent per day
+5. Create `Notification` (channel=`'whatsapp'`) with Arabic message
+6. Emit `DomainEvent` (type=`'installment_overdue'`)
+
+Uses PostgreSQL advisory lock (`LOCK = 421001`) for singleton execution.
+
+---
+
+### 3.5 Ledger Invariants (`ledger_service.post`)
+
+- Every transaction must have `SUM(debits) == SUM(credits)`
+- Every transaction must have `total > 0`
+- Each line must be exactly one side (`debit > 0 XOR credit > 0`)
+
+**Account Balance Formula:**
+```python
+if normal_balance == "debit":
+    balance = SUM(debits) - SUM(credits)
+else:
+    balance = SUM(credits) - SUM(debits)
+```
+
+**Customer Receivable:**
+- Filter ledger entries for account `1100` (AR) + `customer_id`
+- `receivable = SUM(debits) - SUM(credits)` (debit normal)
+
+---
+
+## 4. API CONTRACTS
+
+### 4.1 Authentication
+
+| Endpoint | Method | Auth | Request | Response |
+|----------|--------|------|---------|----------|
+| `/api/v1/auth/login` | POST | None | `LoginRequest` | `LoginResponse` |
+
+**LoginRequest:**
+```json
+{
+  "username": "string",
+  "password": "string"
+}
+```
+
+**LoginResponse:**
+```json
+{
+  "access_token": "eyJhbG...",
+  "token_type": "bearer",
+  "tenant_id": 1,
+  "user_id": 1,
+  "permissions": ["customers.read", "sales.create", ...]
+}
+```
+
+**JWT Payload:**
+```json
+{
+  "sub": "1",
+  "tid": 1,
+  "perms": ["customers.read", "sales.create"],
+  "exp": 1718726400
+}
+```
+
+**Auth Header:** `Authorization: Bearer <token>`
+
+---
+
+### 4.2 Customers (`/api/v1/customers`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `POST /` | POST | `customers.write` | `CustomerCreate` | Customer object |
+| `GET /` | GET | `customers.read` | Query: `phone`, `name`, `page`, `page_size` | Paginated list |
+| `GET /{id}` | GET | `customers.read` | — | Customer + sales + schedule |
+| `PATCH /{id}` | PATCH | `customers.write` | `CustomerUpdate` | Customer object |
+
+**CustomerCreate:**
+```json
+{
+  "full_name": "string (required)",
+  "phone": "string (required, unique per tenant)",
+  "alt_phone": "string | null",
+  "national_id": "string | null",
+  "address": "string | null",
+  "notes": "string | null",
+  "risk_class": "trusted | qi | mixed"  // default: "trusted"
+}
+```
+
+**CustomerUpdate:**
+```json
+{
+  "full_name": "string | null",
+  "phone": "string | null",
+  "alt_phone": "string | null",
+  "national_id": "string | null",
+  "address": "string | null",
+  "notes": "string | null",
+  "risk_class": "string | null",
+  "status": "string | null"
+}
+```
+
+**Customer Response (list):**
+```json
+{
+  "id": 1,
+  "public_id": "uuid-string",
+  "full_name": "Ali Hassan",
+  "phone": "07701234567",
+  "alt_phone": null,
+  "national_id": null,
+  "address": null,
+  "notes": null,
+  "risk_class": "trusted",
+  "status": "active",
+  "created_at": "2026-06-15T10:30:00+00:00",
+  "receivable_balance": 450000,
+  "next_due": "2026-07-15",
+  "is_overdue": false
+}
+```
+
+**Customer Response (detail):**
+```json
+{
+  "...list fields...",
+  "sales": [
+    {
+      "id": 1,
+      "sale_number": "S-2026-000001",
+      "type": "installment",
+      "total_price": 1200000,
+      "status": "active",
+      "schedule": [
+        {
+          "installment_number": 1,
+          "due_date": "2026-07-15",
+          "amount": 100000,
+          "paid": 50000,
+          "remaining": 50000,
+          "status": "partially_paid",
+          "late_days": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### 4.3 Products (`/api/v1/products`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `POST /` | POST | `products.write` | `ProductCreate` | Product detail |
+| `GET /` | GET | `products.read` | Query: `page`, `page_size`, `category_id`, `q`, `status` | Paginated list |
+| `GET /{id}` | GET | `products.read` | — | Product detail |
+| `PATCH /{id}` | PATCH | `products.write` | `ProductUpdate` | Product detail |
+| `DELETE /{id}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+| `POST /{id}/variants` | POST | `products.write` | `VariantIn` | Variant |
+| `PATCH /{id}/variants/{vid}` | PATCH | `products.write` | `VariantUpdate` | Variant |
+| `DELETE /{id}/variants/{vid}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+| `POST /{id}/images` | POST | `products.write` | `UploadFile` | Image |
+| `DELETE /{id}/images/{img_id}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+
+**ProductCreate:**
+```json
+{
+  "sku": "string (required, unique per tenant)",
+  "name": "string (required)",
+  "name_ar": "string | null",
+  "category_id": "number | null",
+  "base_price": "number | null",  // required if no variants
+  "stock_quantity": "number",     // default 0
+  "description": "string | null",
+  "brand": "string | null",
+  "tags": "string | null",
+  "status": "active | draft",     // default "active"
+  "variants": [
+    {
+      "sku": "string | null",
+      "price_cash": "number (required, > 0)",
+      "price_installment": "number | null (> 0)",
+      "compare_price": "number | null (> 0)",
+      "cost_price": "number | null (>= 0)",
+      "stock_quantity": "number (>= 0)",  // default 0
+      "attributes": "object | null",
+      "is_default": "boolean"  // default false
+    }
+  ] | null
+}
+```
+
+**ProductUpdate:**
+```json
+{
+  "name": "string | null",
+  "name_ar": "string | null",
+  "category_id": "number | null",
+  "base_price": "number | null (> 0)",
+  "stock_quantity": "number | null (>= 0)",
+  "description": "string | null",
+  "brand": "string | null",
+  "tags": "string | null",
+  "status": "string | null",
+  "is_active": "boolean | null"
+}
+```
+
+**VariantIn (create):**
+```json
+{
+  "sku": "string | null",
+  "price_cash": "number (> 0)",
+  "price_installment": "number | null (> 0)",
+  "compare_price": "number | null (> 0)",
+  "cost_price": "number | null (>= 0)",
+  "stock_quantity": "number (>= 0)",
+  "attributes": "object | null",
+  "is_default": "boolean"
+}
+```
+
+**VariantUpdate:**
+```json
+{
+  "sku": "string | null",
+  "price_cash": "number | null (> 0)",
+  "price_installment": "number | null (> 0)",
+  "compare_price": "number | null (> 0)",
+  "cost_price": "number | null (>= 0)",
+  "stock_quantity": "number | null (>= 0)",
+  "attributes": "object | null"
+}
+```
+
+**Product Card Response (list):**
+```json
+{
+  "id": 1,
+  "public_id": "uuid-string",
+  "sku": "PHONE-001",
+  "name": "iPhone 15",
+  "name_ar": "آيفون ١٥",
+  "category_id": 1,
+  "base_price": 1200000,
+  "stock_quantity": 5,
+  "is_active": true,
+  "status": "active",
+  "brand": "Apple",
+  "tags": "phones,apple",
+  "variant_count": 2,
+  "primary_image": {
+    "id": 1,
+    "path": "/static/uploads/1/1/abc.jpg",
+    "thumb_path": "/static/uploads/1/1/abc_thumb.jpg"
+  },
+  "price_cash": 1200000,
+  "price_installment": 1300000,
+  "compare_price": 1400000,
+  "discount_pct": 14
+}
+```
+
+**Product Detail Response:**
+```json
+{
+  "...card fields...",
+  "description": "Latest iPhone",
+  "variants": [
+    {
+      "id": 1,
+      "sku": "PHONE-001-BLK",
+      "price_cash": 1200000,
+      "price_installment": 1300000,
+      "compare_price": 1400000,
+      "cost_price": 1000000,
+      "stock_quantity": 3,
+      "attributes": {"color": "black"},
+      "is_default": true,
+      "discount_pct": 14
+    }
+  ],
+  "images": [...],
+  "category": {"id": 1, "name": "Phones", "name_ar": "هواتف"}
+}
+```
+
+---
+
+### 4.4 Categories (`/api/v1/categories`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `products.read` | — | Array of categories |
+| `POST /` | POST | `products.write` | `CategoryCreate` | Category |
+| `DELETE /{id}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+
+**CategoryCreate:**
+```json
+{
+  "name": "string (required)",
+  "name_ar": "string | null"
+}
+```
+
+**Category Response:**
+```json
+{
+  "id": 1,
+  "name": "Phones",
+  "name_ar": "هواتف",
+  "product_count": 15
+}
+```
+
+---
+
+### 4.5 Sales (`/api/v1/sales`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `POST /` | POST | `sales.create` | `SaleCreate` | Sale detail |
+| `GET /` | GET | `sales.read` | Query: `page`, `page_size`, `customer_id`, `sale_type`, `status` | Paginated list |
+| `GET /{id}` | GET | `sales.read` | — | Sale detail |
+| `POST /{id}/cancel` | POST | `sales.cancel` | — | Cancelled sale |
+
+**SaleCreate:**
+```json
+{
+  "idempotency_key": "string (8-80 chars, required)",
+  "customer_id": "number (required)",
+  "sale_type": "cash | installment",
+  "items": [
+    {
+      "product_id": "number (required)",
+      "variant_id": "number | null",
+      "quantity": "number (> 0)",
+      "item_discount": "number (>= 0)"  // default 0
+    }
+  ],
+  "discount_amount": "number (>= 0)",  // default 0
+  "down_payment": "number (>= 0)",     // default 0
+  "months": "number | null (> 0)",
+  "frequency": "weekly | monthly",    // default "monthly"
+  "start_date": "string (ISO date) | null",
+  "sale_channel": "store | online | agent",  // default "store"
+  "salesperson_id": "number | null",
+  "notes": "string | null"
+}
+```
+
+**Sale List Response:**
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "sale_number": "S-2026-000001",
+      "customer_id": 1,
+      "customer_name": "Ali Hassan",
+      "sale_type": "installment",
+      "sale_channel": "store",
+      "subtotal": 1200000,
+      "discount_amount": 0,
+      "total_price": 1200000,
+      "down_payment": 200000,
+      "status": "active",
+      "notes": null,
+      "created_at": "2026-06-15T10:30:00+00:00",
+      "item_count": 1
+    }
+  ],
+  "page": 1,
+  "page_size": 50,
+  "total_count": 100,
+  "total_pages": 2
+}
+```
+
+**Sale Detail Response:**
+```json
+{
+  "id": 1,
+  "sale_number": "S-2026-000001",
+  "customer_id": 1,
+  "customer_name": "Ali Hassan",
+  "sale_type": "installment",
+  "sale_channel": "store",
+  "salesperson_id": null,
+  "subtotal": 1200000,
+  "discount_amount": 0,
+  "total_price": 1200000,
+  "down_payment": 200000,
+  "status": "active",
+  "notes": null,
+  "created_at": "2026-06-15T10:30:00+00:00",
+  "items": [
+    {
+      "product_id": 1,
+      "variant_id": 1,
+      "name_snapshot": "iPhone 15",
+      "name_ar_snapshot": "آيفون ١٥",
+      "quantity": 1,
+      "unit_price": 1200000,
+      "item_discount": 0,
+      "line_total": 1200000
+    }
+  ],
+  "plan": {
+    "id": 1,
+    "public_id": "uuid",
+    "principal_amount": 1000000,
+    "months": 10,
+    "monthly_amount": 100000,
+    "frequency": "monthly",
+    "start_date": "2026-06-15",
+    "end_date": "2027-04-15",
+    "status": "active"
+  },
+  "schedule": [
+    {
+      "installment_number": 1,
+      "due_date": "2026-07-15",
+      "amount": 100000,
+      "paid": 0,
+      "remaining": 100000,
+      "status": "pending",
+      "late_days": 0
+    }
+  ]
+}
+```
+
+---
+
+### 4.6 Installments (`/api/v1/plans`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /{plan_id}/schedule` | GET | `plans.read` | — | Schedule with derived states |
+
+**Schedule Response:**
+```json
+{
+  "plan_id": 1,
+  "status": "active",
+  "schedule": [
+    {
+      "installment_number": 1,
+      "due_date": "2026-07-15",
+      "amount": 100000,
+      "paid": 0,
+      "remaining": 100000,
+      "status": "pending",
+      "late_days": 0
+    }
+  ]
+}
+```
+
+---
+
+### 4.7 Payments (`/api/v1/payments`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `payments.read` | Query: `sale_id`, `customer_id`, `limit` | Array of payments |
+| `POST /` | POST | `payments.create` | `PaymentCreate` | Payment result |
+
+**PaymentCreate:**
+```json
+{
+  "idempotency_key": "string (8-80 chars, required)",
+  "sale_id": "number (required)",
+  "amount": "number (> 0)",
+  "payment_method": "cash | qi | transfer | zaincash | visa",
+  "reference_number": "string | null",
+  "source": "manual | api | external"  // default "manual"
+}
+```
+
+**Payment Response:**
+```json
+{
+  "id": 1,
+  "public_id": "uuid-string",
+  "receipt_number": "R-2026-000001",
+  "sale_id": 1,
+  "customer_id": 1,
+  "amount": 100000,
+  "fee_amount": 0,
+  "payment_method": "cash",
+  "status": "confirmed",
+  "allocations": [
+    {
+      "installment_number": 1,
+      "allocated_amount": 100000
+    }
+  ],
+  "plan_status": "active",
+  "sale_status": "active",
+  "replayed": false
+}
+```
+
+---
+
+### 4.8 Ledger (`/api/v1/ledger`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `ledger.read` | Query: `customer_id`, `limit` | Grouped transactions |
+| `GET /accounts` | GET | `ledger.read` | — | Account balances |
+
+**Ledger Entries Response:**
+```json
+[
+  {
+    "transaction_group_id": "uuid-string",
+    "reference_type": "sale",
+    "reference_id": 1,
+    "created_at": "2026-06-15T10:30:00+00:00",
+    "total": 1200000,
+    "lines": [
+      {
+        "account_code": "1100",
+        "account_name": "Accounts Receivable",
+        "account_name_ar": "الذمم المدينة",
+        "debit": 1200000,
+        "credit": 0,
+        "description": "AR on sale",
+        "customer_id": 1,
+        "sale_id": 1
+      },
+      {
+        "account_code": "4000",
+        "account_name": "Sales Revenue",
+        "account_name_ar": "إيرادات المبيعات",
+        "debit": 0,
+        "credit": 1200000,
+        "description": "sales revenue",
+        "customer_id": null,
+        "sale_id": 1
+      }
+    ]
+  }
+]
+```
+
+**Account Balances Response:**
+```json
+[
+  {
+    "code": "1000",
+    "name": "Cash",
+    "name_ar": "النقد",
+    "type": "asset",
+    "normal_balance": "debit",
+    "balance": 5000000
+  }
+]
+```
+
+---
+
+### 4.9 Dashboard (`/api/v1/dashboard`)
+
+| Endpoint | Method | Permission | Response |
+|----------|--------|------------|----------|
+| `GET /summary` | GET | `reports.read` | Dashboard KPIs |
+
+**Dashboard Response:**
+```json
+{
+  "total_outstanding": 4500000,
+  "total_cash_collected": 8500000,
+  "today_payments": 350000,
+  "overdue_count": 12,
+  "customers_count": 156,
+  "active_sales_count": 89
+}
+```
+
+---
+
+### 4.10 Notifications (`/api/v1/notifications`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `reports.read` | Query: `limit` | Array of notifications |
+
+**Notification Response:**
+```json
+[
+  {
+    "id": 1,
+    "customer_id": 1,
+    "customer_name": "Ali Hassan",
+    "channel": "whatsapp",
+    "message": "عزيزي Ali Hassan، القسط المستحق...",
+    "related_type": "overdue",
+    "related_id": 1,
+    "status": "pending",
+    "created_at": "2026-06-15T10:30:00+00:00"
+  }
+]
+```
+
+---
+
+### 4.11 Admin (`/api/v1`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /users` | GET | `users.manage` | — | Array of users |
+| `POST /users` | POST | `users.manage` | `UserCreate` | User |
+| `PATCH /users/{id}` | PATCH | `users.manage` | `UserUpdate` | User |
+| `POST /users/{id}/password` | POST | `users.manage` | `PasswordReset` | Status |
+| `GET /roles` | GET | `users.manage` | — | Array of roles |
+| `GET /permissions` | GET | `users.manage` | — | Array of permissions |
+
+---
+
+### 4.12 Account (`/api/v1`)
+
+| Endpoint | Method | Auth | Request | Response |
+|----------|--------|------|---------|----------|
+| `GET /me` | GET | Bearer | — | Current user |
+| `PATCH /me` | PATCH | Bearer | `ProfileUpdate` | Updated user |
+| `POST /me/password` | POST | Bearer | `PasswordChange` | Status |
+| `GET /tenant` | GET | Bearer | — | Tenant info |
+| `GET /settings` | GET | `settings.manage` | — | Settings dict |
+| `PUT /settings/{key}` | PUT | `settings.manage` | `SettingUpsert` | Setting |
+
+---
+
+## 5. PERMISSION SYSTEM (RBAC)
+
+### 5.1 Permission Codes
+
+| Code | Description |
+|------|-------------|
+| `customers.read` | View customers |
+| `customers.write` | Create/edit customers |
+| `products.read` | View products |
+| `products.write` | Create/edit products |
+| `sales.read` | View sales |
+| `sales.create` | Create sales |
+| `sales.cancel` | Cancel sales |
+| `plans.read` | View plans |
+| `plans.reschedule` | Reschedule plans |
+| `payments.read` | View payments |
+| `payments.create` | Record payments |
+| `payments.reverse` | Reverse payments |
+| `ledger.read` | View ledger |
+| `reports.read` | View reports/dashboard |
+| `users.manage` | Manage users |
+| `roles.manage` | Manage roles |
+| `settings.manage` | Manage tenant settings |
+
+### 5.2 System Roles (Seeded)
+
+| Role | Permissions |
+|------|-------------|
+| **admin** | ALL permissions |
+| **staff** | customers.read, customers.write, products.read, sales.read, sales.create, plans.read, payments.read, payments.create, reports.read |
+| **accountant** | sales.read, plans.read, payments.read, payments.reverse, ledger.read, reports.read |
+
+---
+
+## 6. CONSTRAINTS & VALIDATION RULES
+
+### 6.1 Monetary Values
+- **ALL money is integer** (BigInteger) — no decimals, no floats
+- Currency: IQD (Iraqi Dinar)
+- Values represent the smallest unit (fils), though typically treated as whole dinars
+
+### 6.2 Stock Management
+- Products have `stock_quantity` (aggregate of variants)
+- Variants have individual `stock_quantity`
+- On sale: deduct from variant first, then recalculate product aggregate
+- Stock cannot go negative (CHECK constraint)
+
+### 6.3 Soft Delete Pattern
+- All DATA tables have `is_deleted` + `deleted_at`
+- Partial unique indexes exclude deleted rows
+- No hard deletes in application code
+
+### 6.4 Idempotency
+- `SaleCreate` requires `idempotency_key` (8-80 chars)
+- `PaymentCreate` requires `idempotency_key`
+- Duplicate keys within tenant return existing record with `replayed: true`
+
+### 6.5 Sale Lifecycle
+```
+draft/active → active → completed
+                    ↘ cancelled
+```
+- Cash sales auto-complete
+- Installment sales complete when all installments fully paid
+
+### 6.6 Installment Plan Lifecycle
+```
+active → completed (all paid)
+     → defaulted (manual/admin)
+     → cancelled (sale cancelled)
+     → superseded (rescheduled)
+```
+
+---
+
+## 7. PAGINATION ENVELOPE
+
+All list endpoints return:
+```json
+{
+  "data": [...],
+  "page": 1,
+  "page_size": 50,
+  "total_count": 137,
+  "total_pages": 3
+}
+```
+
+Default `page_size`: 50 (customers), 100 (products)
+Max `page_size`: 200
+
+---
+
+## 8. ERROR RESPONSES
+
+Standard FastAPI HTTPException format:
+```json
+{
+  "detail": "error message"
+}
+```
+
+| Status | Trigger |
+|--------|---------|
+| 400 | Bad request (validation failure) |
+| 401 | Unauthorized (missing/invalid token) |
+| 403 | Forbidden (missing permission) |
+| 404 | Not found |
+| 409 | Conflict (business rule violation, duplicate) |
+| 500 | Ledger imbalance (critical invariant violation) |
+
+---
+
+## 9. SEQUENCE NUMBERING
+
+| Type | Prefix | Example |
+|------|--------|---------|
+| Sale | `S` | `S-2026-000042` |
+| Receipt | `R` | `R-2026-000015` |
+
+Format: `{PREFIX}-{YYYY}-{NNNNNN}` (zero-padded to 6 digits)
+
+---
+
+## 10. STATIC FILE SERVING
+
+- Product images served from `/static/uploads/<tenant_id>/<product_id>/<uuid>.jpg`
+- Thumbnails: `<uuid>_thumb.jpg`
+- Max 8 images per product
+- Images are center-cropped to 1:1 square
+- Full: 800px, Thumb: 300px
+
+---
+
+## 11. CRITICAL FRONTEND IMPLICATIONS
+
+### 11.1 Money Handling
+- **Never use floating-point arithmetic** for money
+- All prices, payments, balances are integers
+- Format for display: `value.toLocaleString('ar-IQ') + ' د.ع'`
+
+### 11.2 Installment Calculation (Client-Side Preview)
+```typescript
+function calculateInstallments(
+  totalPrice: number,
+  downPayment: number,
+  months: number,
+  frequency: 'weekly' | 'monthly',
+  startDate: Date
+): InstallmentPreview[] {
+  const principal = totalPrice - downPayment;
+  const base = Math.floor(principal / months);
+  const remainder = principal - base * months;
+  
+  if (base <= 0) throw new Error("Installment rounds to zero");
+  
+  const installments: InstallmentPreview[] = [];
+  for (let k = 0; k < months; k++) {
+    installments.push({
+      installmentNumber: k + 1,
+      dueDate: calculateDueDate(startDate, k, frequency),
+      amount: base + (k === months - 1 ? remainder : 0),
+    });
+  }
+  return installments;
+}
+```
+
+### 11.3 FIFO Payment Visualization
+- Display installments in order
+- Show `paid / amount` progress per installment
+- When recording payment, show cascading allocation:
+  1. Fill installment 1 partially/fully
+  2. Overflow to installment 2
+  3. Continue until payment exhausted
+
+### 11.4 Real-Time Considerations
+- Use TanStack Query with appropriate stale times
+- Dashboard summary should refetch on window focus
+- Payment recording should invalidate: `['sale', saleId]`, `['customer', customerId]`, `['dashboard']`, `['ledger']`
+
+### 11.5 Arabic RTL Support
+- All entities have `name_ar` fields
+- Currency is IQD (د.ع)
+- Date format: `YYYY-MM-DD` (ISO) for API, display localized
+- Numbers should use Arabic-Indic numerals where appropriate
+
+---
+
+This specification is derived 100% from the actual codebase and is ready for production frontend implementation.
+ Based on my complete reverse-engineering of the **aqsatt** (Credit Commerce System) repository, I have extracted every entity, relationship, business rule, API contract, and constraint. Below is the **FULL SYSTEM SPECIFICATION** — a precise, production-grade document that can be handed directly to frontend engineers.
+
+---
+
+# AQSAṬṬ — FULL SYSTEM SPECIFICATION
+## Credit Commerce System (نظام الأقساط)
+
+---
+
+## 1. SYSTEM OVERVIEW
+
+| Attribute | Value |
+|-----------|-------|
+| **Backend** | FastAPI (Python) + SQLAlchemy 2.0 (Mapped declarative) |
+| **Database** | PostgreSQL 15+ with Row-Level Security (RLS) |
+| **Auth** | JWT Bearer tokens (HS256), permission-based RBAC |
+| **Tenancy** | Single-database multi-tenant via `app.tenant_id` GUC + RLS policies |
+| **Architecture** | Transactional outbox (domain events), double-entry ledger, soft-delete everywhere |
+| **Currency** | IQD (Iraqi Dinar) — all monetary values are **integer fils** (no floats) |
+
+---
+
+## 2. DATA MODEL (ENTITIES & RELATIONSHIPS)
+
+### 2.1 Entity Relationship Diagram (Textual)
+
+```
+┌─────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│   Tenant    │◄────┤  TenantSetting  │     │ TenantSequence   │
+│  (platform) │     └─────────────────┘     └──────────────────┘
+└──────┬──────┘
+       │
+       ├──► ┌─────────────┐     ┌─────────────────┐
+       │    │   Category  │◄────┤    Product      │
+       │    └─────────────┘     └────────┬────────┘
+       │                                 │
+       │                    ┌────────────┼────────────┐
+       │                    ▼            ▼            ▼
+       │              ┌─────────┐  ┌──────────┐  ┌──────────┐
+       │              │ Variant │  │  Image   │  │ SaleItem │
+       │              └────┬────┘  └──────────┘  └────┬─────┘
+       │                   │                          │
+       │                   └────────────┬───────────────┘
+       │                              │
+       │                    ┌─────────▼─────────┐
+       │                    │      Sale         │
+       │                    │  (cash/install)   │
+       │                    └─────────┬─────────┘
+       │                              │
+       │         ┌──────────────────┼──────────────────┐
+       │         ▼                  ▼                  ▼
+       │   ┌─────────────┐   ┌──────────────┐   ┌─────────────┐
+       │   │InstallmentPlan│  │  Payment     │   │  LedgerEntry │
+       │   │  (revisioned) │  │  (reversible)│   │ (double-entry)│
+       │   └──────┬────────┘  └──────┬───────┘   └─────────────┘
+       │          │                  │
+       │          ▼                  ▼
+       │   ┌─────────────┐     ┌──────────────┐
+       │   │ Installment │◄────┤PaymentAllocation│
+       │   │ (scheduled) │     │  (FIFO link)   │
+       │   └─────────────┘     └──────────────┘
+       │
+       ├──► ┌─────────────┐     ┌─────────────┐
+       │    │   Customer  │     │    User     │
+       │    │  (risk class)│     │  (RBAC)     │
+       │    └─────────────┘     └──────┬──────┘
+       │                               │
+       │                    ┌─────────┼─────────┐
+       │                    ▼         ▼         ▼
+       │              ┌────────┐  ┌───────┐  ┌─────────┐
+       │              │  Role  │  │Permission│ │UserRole │
+       │              └────────┘  └───────┘  └─────────┘
+       │
+       └──► ┌─────────────┐     ┌─────────────────┐
+            │   Account   │     │  DomainEvent    │
+            │ (COA: 1000) │     │ (outbox pattern)│
+            └─────────────┘     └─────────────────┘
+```
+
+---
+
+### 2.2 Core Entities — Full Field Specifications
+
+#### **Tenant** (Platform-level, NOT RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK, auto-increment | — |
+| `public_id` | UUID | unique, `gen_random_uuid()` | generated |
+| `parent_tenant_id` | BigInteger | FK → tenants.id, nullable | null |
+| `name` | String(120) | NOT NULL | — |
+| `slug` | String(60) | NOT NULL, unique | — |
+| `type` | String(12) | CHECK IN ('store','reseller') | `'store'` |
+| `currency_code` | CHAR(3) | NOT NULL | `'IQD'` |
+| `timezone` | String(40) | NOT NULL | `'Asia/Baghdad'` |
+| `status` | String(12) | CHECK IN ('active','suspended') | `'active'` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | `server_default=now()`, NOT NULL | now |
+
+---
+
+#### **User** (App-scoped, NOT RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `public_id` | UUID | unique, generated |
+| `home_tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `name` | String(100) | NOT NULL |
+| `username` | String(50) | NOT NULL, unique |
+| `password_hash` | String(255) | NOT NULL (bcrypt) |
+| `is_active` | Boolean | NOT NULL, default `true` |
+| `is_deleted` | Boolean | NOT NULL, default `false` |
+| `deleted_at` | DateTime(tz) | nullable |
+| `created_at` | DateTime(tz) | NOT NULL |
+| `updated_at` | DateTime(tz) | NOT NULL |
+
+---
+
+#### **Customer** (RLS-scoped DATA table)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `full_name` | String(150) | NOT NULL | — |
+| `phone` | String(20) | NOT NULL | — |
+| `alt_phone` | String(20) | nullable | null |
+| `national_id` | String(30) | nullable | null |
+| `address` | Text | nullable | null |
+| `notes` | Text | nullable | null |
+| `risk_class` | String(10) | CHECK IN ('trusted','qi','mixed') | `'trusted'` |
+| `status` | String(10) | CHECK IN ('active','blocked') | `'active'` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(tenant_id, phone)` unique WHERE `is_deleted = false` (partial index)
+
+---
+
+#### **Category** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `name` | String(100) | NOT NULL |
+| `name_ar` | String(100) | NOT NULL |
+| `is_deleted` | Boolean | NOT NULL, default `false` |
+| `deleted_at` | DateTime(tz) | nullable |
+
+---
+
+#### **Product** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sku` | String(50) | NOT NULL | — |
+| `name` | String(150) | NOT NULL | — |
+| `name_ar` | String(150) | NOT NULL | — |
+| `category_id` | BigInteger | FK → categories.id, nullable | null |
+| `base_price` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `stock_quantity` | Integer | NOT NULL, CHECK >= 0 | `0` |
+| `description` | Text | nullable | null |
+| `brand` | String(100) | nullable | null |
+| `tags` | String(300) | nullable | null |
+| `status` | String(20) | NOT NULL | `'active'` |
+| `is_active` | Boolean | NOT NULL | `true` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(tenant_id, sku)` unique WHERE `is_deleted = false` (partial index)
+
+---
+
+#### **ProductVariant** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `product_id` | BigInteger | FK → products.id, NOT NULL | — |
+| `sku` | String(60) | NOT NULL | — |
+| `price_cash` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `price_installment` | BigInteger | nullable | null |
+| `compare_price` | BigInteger | nullable | null |
+| `cost_price` | BigInteger | nullable | null |
+| `stock_quantity` | Integer | NOT NULL, CHECK >= 0 | `0` |
+| `attributes` | JSONB | nullable | null |
+| `is_default` | Boolean | NOT NULL | `false` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(tenant_id, sku)` unique WHERE `is_deleted = false`
+
+---
+
+#### **ProductImage** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `product_id` | BigInteger | FK → products.id, NOT NULL | — |
+| `variant_id` | BigInteger | FK → product_variants.id, nullable | null |
+| `path` | String(300) | NOT NULL | — |
+| `thumb_path` | String(300) | nullable | null |
+| `sort_order` | Integer | NOT NULL | `0` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+---
+
+#### **Sale** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sale_number` | String(20) | NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, NOT NULL | — |
+| `sale_type` | String(12) | CHECK IN ('cash','installment') | — |
+| `sale_channel` | String(10) | CHECK IN ('store','online','agent') | `'store'` |
+| `salesperson_id` | BigInteger | FK → users.id, nullable | null |
+| `subtotal` | BigInteger | NOT NULL | — |
+| `discount_amount` | BigInteger | NOT NULL | `0` |
+| `total_price` | BigInteger | NOT NULL | — |
+| `down_payment` | BigInteger | NOT NULL | `0` |
+| `status` | String(12) | CHECK IN ('active','completed','cancelled') | `'active'` |
+| `notes` | Text | nullable | null |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+| `updated_at` | DateTime(tz) | NOT NULL | now |
+
+**Check Constraints:**
+- `total_price = subtotal - discount_amount`
+- `down_payment < total_price`
+
+**Unique Constraint:** `(tenant_id, sale_number)` unique WHERE `is_deleted = false`
+
+---
+
+#### **SaleItem** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sale_id` | BigInteger | FK → sales.id, NOT NULL | — |
+| `product_id` | BigInteger | FK → products.id, NOT NULL | — |
+| `variant_id` | BigInteger | FK → product_variants.id, nullable | null |
+| `name_snapshot` | String(150) | NOT NULL | — |
+| `name_ar_snapshot` | String(150) | NOT NULL | — |
+| `quantity` | Integer | NOT NULL, CHECK > 0 | — |
+| `unit_price` | BigInteger | NOT NULL | — |
+| `item_discount` | BigInteger | NOT NULL | `0` |
+| `line_total` | BigInteger | NOT NULL | — |
+
+**Check Constraint:** `line_total = unit_price * quantity - item_discount`
+
+---
+
+#### **InstallmentPlan** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `sale_id` | BigInteger | FK → sales.id, NOT NULL | — |
+| `revision` | Integer | NOT NULL | `1` |
+| `supersedes_plan_id` | BigInteger | FK → installment_plans.id, nullable | null |
+| `principal_amount` | BigInteger | NOT NULL | — |
+| `months` | Integer | NOT NULL | — |
+| `monthly_amount` | BigInteger | NOT NULL | — |
+| `frequency` | String(10) | NOT NULL | `'monthly'` |
+| `start_date` | Date | NOT NULL | — |
+| `end_date` | Date | NOT NULL | — |
+| `status` | String(12) | CHECK IN ('active','completed','defaulted','cancelled','superseded') | `'active'` |
+| `is_deleted` | Boolean | NOT NULL | `false` |
+| `deleted_at` | DateTime(tz) | nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(sale_id, revision)` unique
+
+**Relationship:** `plan.installments` → list[Installment] (backref)
+
+---
+
+#### **Installment** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `plan_id` | BigInteger | FK → installment_plans.id, NOT NULL | — |
+| `installment_number` | Integer | NOT NULL | — |
+| `due_date` | Date | NOT NULL | — |
+| `amount` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `status` | String(12) | CHECK IN ('scheduled','cancelled') | `'scheduled'` |
+| `late_days` | Integer | NOT NULL | `0` |
+| `last_payment_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraint:** `(plan_id, installment_number)` unique
+
+**Index:** `idx_inst_due` on `due_date` WHERE `status = 'scheduled'`
+
+---
+
+#### **PlanRevision** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `plan_id` | BigInteger | FK → installment_plans.id, NOT NULL |
+| `new_plan_id` | BigInteger | FK → installment_plans.id, NOT NULL |
+| `old_months` | Integer | NOT NULL |
+| `new_months` | Integer | NOT NULL |
+| `reason` | Text | NOT NULL |
+| `created_by` | BigInteger | FK → users.id, NOT NULL |
+| `created_at` | DateTime(tz) | NOT NULL |
+
+---
+
+#### **Payment** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `public_id` | UUID | unique, generated | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `receipt_number` | String(20) | NOT NULL | — |
+| `idempotency_key` | String(80) | NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, NOT NULL | — |
+| `sale_id` | BigInteger | FK → sales.id, NOT NULL | — |
+| `amount` | BigInteger | NOT NULL, CHECK > 0 | — |
+| `fee_amount` | BigInteger | NOT NULL, CHECK >= 0 | `0` |
+| `payment_method` | String(15) | CHECK IN ('cash','qi','transfer','zaincash','visa') | — |
+| `status` | String(12) | CHECK IN ('pending','confirmed','failed','reversed') | `'confirmed'` |
+| `reference_number` | String(100) | nullable | null |
+| `source` | String(10) | CHECK IN ('manual','api','external') | `'manual'` |
+| `received_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `reversed_payment_id` | BigInteger | FK → payments.id, nullable | null |
+| `transaction_group_id` | UUID | NOT NULL | — |
+| `paid_at` | DateTime(tz) | NOT NULL | now |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Unique Constraints:**
+- `(tenant_id, idempotency_key)` unique
+- `(tenant_id, receipt_number)` unique
+
+---
+
+#### **PaymentAllocation** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `payment_id` | BigInteger | FK → payments.id, NOT NULL |
+| `installment_id` | BigInteger | FK → installments.id, NOT NULL |
+| `amount` | BigInteger | NOT NULL, CHECK > 0 |
+
+**Indexes:** `idx_alloc_inst` (installment_id), `idx_alloc_pay` (payment_id)
+
+---
+
+#### **Account** (Chart of Accounts — RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `code` | String(10) | NOT NULL |
+| `name` | String(100) | NOT NULL |
+| `name_ar` | String(100) | NOT NULL |
+| `type` | String(10) | CHECK IN ('asset','liability','equity','revenue','expense') |
+| `normal_balance` | String(6) | CHECK IN ('debit','credit') |
+
+**Unique:** `(tenant_id, code)`
+
+**Seed Accounts:**
+| Code | Name | Name AR | Type | Normal Balance |
+|------|------|---------|------|----------------|
+| 1000 | Cash | النقد | asset | debit |
+| 1100 | Accounts Receivable | الذمم المدينة | asset | debit |
+| 4000 | Sales Revenue | إيرادات المبيعات | revenue | credit |
+| 5000 | Provider Fees Expense | رسوم المزوّد | expense | debit |
+
+---
+
+#### **LedgerEntry** (RLS-scoped, append-only)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `transaction_group_id` | UUID | NOT NULL | — |
+| `account_id` | BigInteger | FK → accounts.id, NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, nullable | null |
+| `sale_id` | BigInteger | FK → sales.id, nullable | null |
+| `debit_amount` | BigInteger | NOT NULL | `0` |
+| `credit_amount` | BigInteger | NOT NULL | `0` |
+| `reference_type` | String(20) | CHECK IN ('sale','payment','reversal','reschedule') | — |
+| `reference_id` | BigInteger | NOT NULL | — |
+| `description` | String(255) | nullable | null |
+| `reversed_entry_id` | BigInteger | FK → ledger_entries.id, nullable | null |
+| `created_by` | BigInteger | FK → users.id, NOT NULL | — |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+**Check Constraint:** `(debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0)`
+
+---
+
+#### **DomainEvent** (RLS-scoped, transactional outbox)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `event_type` | String(40) | NOT NULL | — |
+| `entity_type` | String(30) | NOT NULL | — |
+| `entity_id` | BigInteger | NOT NULL | — |
+| `payload` | JSONB | NOT NULL | — |
+| `status` | String(10) | CHECK IN ('pending','processed','failed') | `'pending'` |
+| `attempts` | Integer | NOT NULL | `0` |
+| `last_error` | Text | nullable | null |
+| `processed_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+---
+
+#### **AuditLog** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `entity_type` | String(30) | NOT NULL |
+| `entity_id` | BigInteger | NOT NULL |
+| `action` | String(20) | CHECK IN ('create','update','delete','reschedule') |
+| `old_data` | JSONB | nullable |
+| `new_data` | JSONB | nullable |
+| `changed_by` | BigInteger | FK → users.id, NOT NULL |
+| `created_at` | DateTime(tz) | NOT NULL |
+
+---
+
+#### **Notification** (RLS-scoped)
+| Field | Type | Constraints | Default |
+|-------|------|-------------|---------|
+| `id` | BigInteger | PK | — |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL | — |
+| `customer_id` | BigInteger | FK → customers.id, NOT NULL | — |
+| `channel` | String(10) | CHECK IN ('sms','whatsapp') | — |
+| `message` | Text | NOT NULL | — |
+| `related_type` | String(20) | NOT NULL | — |
+| `related_id` | BigInteger | NOT NULL | — |
+| `status` | String(10) | CHECK IN ('pending','sent','failed') | `'pending'` |
+| `sent_at` | DateTime(tz) | nullable | null |
+| `created_at` | DateTime(tz) | NOT NULL | now |
+
+---
+
+#### **CollectionLog** (RLS-scoped)
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `id` | BigInteger | PK |
+| `tenant_id` | BigInteger | FK → tenants.id, NOT NULL |
+| `installment_id` | BigInteger | FK → installments.id, NOT NULL |
+| `action` | String(30) | CHECK IN ('marked_late','notification_sent','manual_note') |
+| `notes` | Text | nullable |
+| `created_by` | BigInteger | FK → users.id, nullable |
+| `created_at` | DateTime(tz) | NOT NULL |
+
+---
+
+### 2.3 Relationships Summary
+
+| Parent | Child | Type | Key |
+|--------|-------|------|-----|
+| Tenant | Customer | 1:N | `tenant_id` |
+| Tenant | Product | 1:N | `tenant_id` |
+| Tenant | Category | 1:N | `tenant_id` |
+| Tenant | Sale | 1:N | `tenant_id` |
+| Tenant | InstallmentPlan | 1:N | `tenant_id` |
+| Tenant | Payment | 1:N | `tenant_id` |
+| Tenant | Account | 1:N | `tenant_id` |
+| Tenant | LedgerEntry | 1:N | `tenant_id` |
+| Product | ProductVariant | 1:N | `product_id` |
+| Product | ProductImage | 1:N | `product_id` |
+| Product | SaleItem | 1:N | `product_id` |
+| ProductVariant | SaleItem | 1:N | `variant_id` |
+| ProductVariant | ProductImage | 1:N | `variant_id` |
+| Category | Product | 1:N | `category_id` |
+| Customer | Sale | 1:N | `customer_id` |
+| Customer | Payment | 1:N | `customer_id` |
+| Customer | LedgerEntry | 1:N | `customer_id` |
+| Sale | SaleItem | 1:N | `sale_id` |
+| Sale | InstallmentPlan | 1:1 (active) | `sale_id` |
+| Sale | Payment | 1:N | `sale_id` |
+| InstallmentPlan | Installment | 1:N | `plan_id` |
+| InstallmentPlan | PlanRevision | 1:N | `plan_id` |
+| Installment | PaymentAllocation | 1:N | `installment_id` |
+| Payment | PaymentAllocation | 1:N | `payment_id` |
+| User | Sale | 1:N | `created_by` |
+| User | Payment | 1:N | `received_by`, `created_by` |
+
+---
+
+## 3. BUSINESS LOGIC SPECIFICATION
+
+### 3.1 Sale Creation Flow (`sale_service.create_sale`)
+
+```
+INPUT: items[], sale_type, customer_id, discount_amount, down_payment, months, frequency, start_date
+```
+
+**Step 1 — Customer Validation:**
+- Customer must exist, not deleted, status = `'active'`
+- If `sale_type == 'installment'`:
+  - `months` required and >= 1
+  - `frequency` must be `'weekly'` or `'monthly'`
+  - `start_date` required
+
+**Step 2 — Item Validation & Stock Deduction:**
+For each item in `items[]`:
+- Fetch product with `FOR UPDATE` lock
+- If `variant_id` provided: validate variant belongs to product, not deleted
+- If no `variant_id`: fall back to default variant (`is_default = true`)
+- If no variants at all: use product-level price/stock (legacy)
+- Check stock >= quantity
+- `unit_price` = variant.price_cash (or product.base_price)
+- `item_discount` defaults to 0
+- `line_total = unit_price * quantity - item_discount` (must be > 0)
+- Deduct stock from variant (or product)
+- If variant: recalculate product.stock_quantity = SUM(all variant stocks)
+
+**Step 3 — Totals:**
+- `subtotal = SUM(line_total)`
+- `total_price = subtotal - discount_amount` (must be > 0)
+- If installment: `0 <= down_payment < total_price`
+- If cash: `down_payment = 0`
+
+**Step 4 — Sale Number Generation:**
+- `sale_number = format_number("S", next_number(tenant_id, "sale"))`
+- Format: `S-YYYY-NNNNNN` (e.g., `S-2026-000042`)
+
+**Step 5 — Ledger Posting (Sale Recognition):**
+```
+Dr 1100 (AR)        total_price
+    Cr 4000 (Revenue)   total_price
+```
+
+**Step 6 — Cash Sale Path:**
+- Auto-create full payment (receipt `R-YYYY-NNNNNN`)
+- Ledger: Dr 1000 (Cash), Cr 1100 (AR)
+- Sale.status = `'completed'`
+
+**Step 7 — Installment Sale Path:**
+- `principal = total_price - down_payment`
+- `base = principal // months` (integer division)
+- `remainder = principal - base * months`
+- If `base <= 0`: reject (too many months / too little down payment)
+- Create InstallmentPlan:
+  - `revision = 1`
+  - `monthly_amount = base`
+  - `end_date = _due(start_date, months - 1, frequency)`
+- Create Installment rows:
+  - For k in 0..months-1:
+    - `due_date = _due(start_date, k, frequency)`
+    - `amount = base + (remainder if k == months-1 else 0)`
+- If `down_payment > 0`: auto-create down payment (same as cash sale)
+
+**Due Date Calculation:**
+```python
+def _add_months(d, m):
+    total = d.month - 1 + m
+    y = d.year + total // 12
+    mo = total % 12 + 1
+    return date(y, mo, min(d.day, calendar.monthrange(y, mo)[1]))
+
+def _due(start, idx, freq):
+    if freq == "weekly":
+        return start + 7*idx days
+    else:
+        return _add_months(start, idx)
+```
+
+---
+
+### 3.2 Payment Recording Flow (`payment_service.record_payment`)
+
+```
+INPUT: sale_id, amount, payment_method, idempotency_key
+```
+
+**Step 1 — Idempotency:**
+- Check existing payment by `(tenant_id, idempotency_key)`
+- If found: return existing with `replayed: true`
+
+**Step 2 — Sale Validation:**
+- Sale must exist, not deleted, status = `'active'`
+
+**Step 3 — Fee Calculation:**
+```python
+FEE_BY_METHOD = {"cash": 0, "qi": 0, "transfer": 0, "zaincash": 0, "visa": 0}
+fee = FEE_BY_METHOD.get(payment_method, 0)
+```
+- `amount > fee` required
+
+**Step 4 — Receipt Generation:**
+- `receipt_number = format_number("R", next_number(tenant_id, "receipt"))`
+- Format: `R-YYYY-NNNNNN`
+
+**Step 5 — Payment Creation:**
+- `status = 'confirmed'`
+- `transaction_group_id = uuid4()`
+
+**Step 6 — FIFO Allocation to Installments:**
+- Fetch all `scheduled` installments for active plan, ordered by `installment_number`
+- For each: calculate `outstanding = amount - SUM(confirmed allocations)`
+- If `amount > total_outstanding`: reject overpayment
+- Allocate sequentially (FIFO):
+  ```python
+  for installment in scheduled_installments:
+      if remaining <= 0: break
+      apply = min(remaining, outstanding)
+      create PaymentAllocation(payment_id, installment_id, apply)
+      installment.last_payment_at = now()
+      remaining -= apply
+  ```
+- Assert `remaining == 0`
+
+**Step 7 — Ledger Posting:**
+- If fee == 0:
+  ```
+  Dr 1000 (Cash)      amount
+      Cr 1100 (AR)        amount
+  ```
+- If fee > 0:
+  ```
+  Dr 1000 (Cash)      amount - fee
+  Dr 5000 (Fee Exp)   fee
+      Cr 1100 (AR)        amount
+  ```
+
+**Step 8 — Completion Check:**
+- `sale_outstanding = SUM(all scheduled installment amounts) - SUM(all confirmed allocations)`
+- If `sale_outstanding == 0`:
+  - `plan.status = 'completed'`
+  - `sale.status = 'completed'`
+
+---
+
+### 3.3 Installment State Derivation (`payment_service.installment_state`)
+
+```python
+def installment_state(inst):
+    paid = SUM(confirmed allocations)
+    remaining = inst.amount - paid
+    
+    if inst.status == "cancelled":
+        return "cancelled"
+    elif remaining <= 0:
+        return "paid"
+    elif inst.due_date < today:
+        return "late"
+    elif paid > 0:
+        return "partially_paid"
+    else:
+        return "pending"
+```
+
+**Derived statuses (NOT stored):** `paid`, `late`, `partially_paid`, `pending`
+
+---
+
+### 3.4 Overdue Job (`jobs/overdue_job.py`)
+
+**Runs daily via cron/systemd.**
+
+For each active tenant:
+1. Find all `scheduled` installments with `due_date < today`
+2. Skip if fully paid (`paid >= amount`)
+3. Update `late_days = (today - due_date).days`
+4. Create `CollectionLog` (action=`'marked_late'`) — idempotent per day
+5. Create `Notification` (channel=`'whatsapp'`) with Arabic message
+6. Emit `DomainEvent` (type=`'installment_overdue'`)
+
+Uses PostgreSQL advisory lock (`LOCK = 421001`) for singleton execution.
+
+---
+
+### 3.5 Ledger Invariants (`ledger_service.post`)
+
+- Every transaction must have `SUM(debits) == SUM(credits)`
+- Every transaction must have `total > 0`
+- Each line must be exactly one side (`debit > 0 XOR credit > 0`)
+
+**Account Balance Formula:**
+```python
+if normal_balance == "debit":
+    balance = SUM(debits) - SUM(credits)
+else:
+    balance = SUM(credits) - SUM(debits)
+```
+
+**Customer Receivable:**
+- Filter ledger entries for account `1100` (AR) + `customer_id`
+- `receivable = SUM(debits) - SUM(credits)` (debit normal)
+
+---
+
+## 4. API CONTRACTS
+
+### 4.1 Authentication
+
+| Endpoint | Method | Auth | Request | Response |
+|----------|--------|------|---------|----------|
+| `/api/v1/auth/login` | POST | None | `LoginRequest` | `LoginResponse` |
+
+**LoginRequest:**
+```json
+{
+  "username": "string",
+  "password": "string"
+}
+```
+
+**LoginResponse:**
+```json
+{
+  "access_token": "eyJhbG...",
+  "token_type": "bearer",
+  "tenant_id": 1,
+  "user_id": 1,
+  "permissions": ["customers.read", "sales.create", ...]
+}
+```
+
+**JWT Payload:**
+```json
+{
+  "sub": "1",
+  "tid": 1,
+  "perms": ["customers.read", "sales.create"],
+  "exp": 1718726400
+}
+```
+
+**Auth Header:** `Authorization: Bearer <token>`
+
+---
+
+### 4.2 Customers (`/api/v1/customers`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `POST /` | POST | `customers.write` | `CustomerCreate` | Customer object |
+| `GET /` | GET | `customers.read` | Query: `phone`, `name`, `page`, `page_size` | Paginated list |
+| `GET /{id}` | GET | `customers.read` | — | Customer + sales + schedule |
+| `PATCH /{id}` | PATCH | `customers.write` | `CustomerUpdate` | Customer object |
+
+**CustomerCreate:**
+```json
+{
+  "full_name": "string (required)",
+  "phone": "string (required, unique per tenant)",
+  "alt_phone": "string | null",
+  "national_id": "string | null",
+  "address": "string | null",
+  "notes": "string | null",
+  "risk_class": "trusted | qi | mixed"  // default: "trusted"
+}
+```
+
+**CustomerUpdate:**
+```json
+{
+  "full_name": "string | null",
+  "phone": "string | null",
+  "alt_phone": "string | null",
+  "national_id": "string | null",
+  "address": "string | null",
+  "notes": "string | null",
+  "risk_class": "string | null",
+  "status": "string | null"
+}
+```
+
+**Customer Response (list):**
+```json
+{
+  "id": 1,
+  "public_id": "uuid-string",
+  "full_name": "Ali Hassan",
+  "phone": "07701234567",
+  "alt_phone": null,
+  "national_id": null,
+  "address": null,
+  "notes": null,
+  "risk_class": "trusted",
+  "status": "active",
+  "created_at": "2026-06-15T10:30:00+00:00",
+  "receivable_balance": 450000,
+  "next_due": "2026-07-15",
+  "is_overdue": false
+}
+```
+
+**Customer Response (detail):**
+```json
+{
+  "...list fields...",
+  "sales": [
+    {
+      "id": 1,
+      "sale_number": "S-2026-000001",
+      "type": "installment",
+      "total_price": 1200000,
+      "status": "active",
+      "schedule": [
+        {
+          "installment_number": 1,
+          "due_date": "2026-07-15",
+          "amount": 100000,
+          "paid": 50000,
+          "remaining": 50000,
+          "status": "partially_paid",
+          "late_days": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### 4.3 Products (`/api/v1/products`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `POST /` | POST | `products.write` | `ProductCreate` | Product detail |
+| `GET /` | GET | `products.read` | Query: `page`, `page_size`, `category_id`, `q`, `status` | Paginated list |
+| `GET /{id}` | GET | `products.read` | — | Product detail |
+| `PATCH /{id}` | PATCH | `products.write` | `ProductUpdate` | Product detail |
+| `DELETE /{id}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+| `POST /{id}/variants` | POST | `products.write` | `VariantIn` | Variant |
+| `PATCH /{id}/variants/{vid}` | PATCH | `products.write` | `VariantUpdate` | Variant |
+| `DELETE /{id}/variants/{vid}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+| `POST /{id}/images` | POST | `products.write` | `UploadFile` | Image |
+| `DELETE /{id}/images/{img_id}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+
+**ProductCreate:**
+```json
+{
+  "sku": "string (required, unique per tenant)",
+  "name": "string (required)",
+  "name_ar": "string | null",
+  "category_id": "number | null",
+  "base_price": "number | null",  // required if no variants
+  "stock_quantity": "number",     // default 0
+  "description": "string | null",
+  "brand": "string | null",
+  "tags": "string | null",
+  "status": "active | draft",     // default "active"
+  "variants": [
+    {
+      "sku": "string | null",
+      "price_cash": "number (required, > 0)",
+      "price_installment": "number | null (> 0)",
+      "compare_price": "number | null (> 0)",
+      "cost_price": "number | null (>= 0)",
+      "stock_quantity": "number (>= 0)",  // default 0
+      "attributes": "object | null",
+      "is_default": "boolean"  // default false
+    }
+  ] | null
+}
+```
+
+**ProductUpdate:**
+```json
+{
+  "name": "string | null",
+  "name_ar": "string | null",
+  "category_id": "number | null",
+  "base_price": "number | null (> 0)",
+  "stock_quantity": "number | null (>= 0)",
+  "description": "string | null",
+  "brand": "string | null",
+  "tags": "string | null",
+  "status": "string | null",
+  "is_active": "boolean | null"
+}
+```
+
+**VariantIn (create):**
+```json
+{
+  "sku": "string | null",
+  "price_cash": "number (> 0)",
+  "price_installment": "number | null (> 0)",
+  "compare_price": "number | null (> 0)",
+  "cost_price": "number | null (>= 0)",
+  "stock_quantity": "number (>= 0)",
+  "attributes": "object | null",
+  "is_default": "boolean"
+}
+```
+
+**VariantUpdate:**
+```json
+{
+  "sku": "string | null",
+  "price_cash": "number | null (> 0)",
+  "price_installment": "number | null (> 0)",
+  "compare_price": "number | null (> 0)",
+  "cost_price": "number | null (>= 0)",
+  "stock_quantity": "number | null (>= 0)",
+  "attributes": "object | null"
+}
+```
+
+**Product Card Response (list):**
+```json
+{
+  "id": 1,
+  "public_id": "uuid-string",
+  "sku": "PHONE-001",
+  "name": "iPhone 15",
+  "name_ar": "آيفون ١٥",
+  "category_id": 1,
+  "base_price": 1200000,
+  "stock_quantity": 5,
+  "is_active": true,
+  "status": "active",
+  "brand": "Apple",
+  "tags": "phones,apple",
+  "variant_count": 2,
+  "primary_image": {
+    "id": 1,
+    "path": "/static/uploads/1/1/abc.jpg",
+    "thumb_path": "/static/uploads/1/1/abc_thumb.jpg"
+  },
+  "price_cash": 1200000,
+  "price_installment": 1300000,
+  "compare_price": 1400000,
+  "discount_pct": 14
+}
+```
+
+**Product Detail Response:**
+```json
+{
+  "...card fields...",
+  "description": "Latest iPhone",
+  "variants": [
+    {
+      "id": 1,
+      "sku": "PHONE-001-BLK",
+      "price_cash": 1200000,
+      "price_installment": 1300000,
+      "compare_price": 1400000,
+      "cost_price": 1000000,
+      "stock_quantity": 3,
+      "attributes": {"color": "black"},
+      "is_default": true,
+      "discount_pct": 14
+    }
+  ],
+  "images": [...],
+  "category": {"id": 1, "name": "Phones", "name_ar": "هواتف"}
+}
+```
+
+---
+
+### 4.4 Categories (`/api/v1/categories`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `products.read` | — | Array of categories |
+| `POST /` | POST | `products.write` | `CategoryCreate` | Category |
+| `DELETE /{id}` | DELETE | `products.write` | — | `{"id": 1, "is_deleted": true}` |
+
+**CategoryCreate:**
+```json
+{
+  "name": "string (required)",
+  "name_ar": "string | null"
+}
+```
+
+**Category Response:**
+```json
+{
+  "id": 1,
+  "name": "Phones",
+  "name_ar": "هواتف",
+  "product_count": 15
+}
+```
+
+---
+
+### 4.5 Sales (`/api/v1/sales`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `POST /` | POST | `sales.create` | `SaleCreate` | Sale detail |
+| `GET /` | GET | `sales.read` | Query: `page`, `page_size`, `customer_id`, `sale_type`, `status` | Paginated list |
+| `GET /{id}` | GET | `sales.read` | — | Sale detail |
+| `POST /{id}/cancel` | POST | `sales.cancel` | — | Cancelled sale |
+
+**SaleCreate:**
+```json
+{
+  "idempotency_key": "string (8-80 chars, required)",
+  "customer_id": "number (required)",
+  "sale_type": "cash | installment",
+  "items": [
+    {
+      "product_id": "number (required)",
+      "variant_id": "number | null",
+      "quantity": "number (> 0)",
+      "item_discount": "number (>= 0)"  // default 0
+    }
+  ],
+  "discount_amount": "number (>= 0)",  // default 0
+  "down_payment": "number (>= 0)",     // default 0
+  "months": "number | null (> 0)",
+  "frequency": "weekly | monthly",    // default "monthly"
+  "start_date": "string (ISO date) | null",
+  "sale_channel": "store | online | agent",  // default "store"
+  "salesperson_id": "number | null",
+  "notes": "string | null"
+}
+```
+
+**Sale List Response:**
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "sale_number": "S-2026-000001",
+      "customer_id": 1,
+      "customer_name": "Ali Hassan",
+      "sale_type": "installment",
+      "sale_channel": "store",
+      "subtotal": 1200000,
+      "discount_amount": 0,
+      "total_price": 1200000,
+      "down_payment": 200000,
+      "status": "active",
+      "notes": null,
+      "created_at": "2026-06-15T10:30:00+00:00",
+      "item_count": 1
+    }
+  ],
+  "page": 1,
+  "page_size": 50,
+  "total_count": 100,
+  "total_pages": 2
+}
+```
+
+**Sale Detail Response:**
+```json
+{
+  "id": 1,
+  "sale_number": "S-2026-000001",
+  "customer_id": 1,
+  "customer_name": "Ali Hassan",
+  "sale_type": "installment",
+  "sale_channel": "store",
+  "salesperson_id": null,
+  "subtotal": 1200000,
+  "discount_amount": 0,
+  "total_price": 1200000,
+  "down_payment": 200000,
+  "status": "active",
+  "notes": null,
+  "created_at": "2026-06-15T10:30:00+00:00",
+  "items": [
+    {
+      "product_id": 1,
+      "variant_id": 1,
+      "name_snapshot": "iPhone 15",
+      "name_ar_snapshot": "آيفون ١٥",
+      "quantity": 1,
+      "unit_price": 1200000,
+      "item_discount": 0,
+      "line_total": 1200000
+    }
+  ],
+  "plan": {
+    "id": 1,
+    "public_id": "uuid",
+    "principal_amount": 1000000,
+    "months": 10,
+    "monthly_amount": 100000,
+    "frequency": "monthly",
+    "start_date": "2026-06-15",
+    "end_date": "2027-04-15",
+    "status": "active"
+  },
+  "schedule": [
+    {
+      "installment_number": 1,
+      "due_date": "2026-07-15",
+      "amount": 100000,
+      "paid": 0,
+      "remaining": 100000,
+      "status": "pending",
+      "late_days": 0
+    }
+  ]
+}
+```
+
+---
+
+### 4.6 Installments (`/api/v1/plans`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /{plan_id}/schedule` | GET | `plans.read` | — | Schedule with derived states |
+
+**Schedule Response:**
+```json
+{
+  "plan_id": 1,
+  "status": "active",
+  "schedule": [
+    {
+      "installment_number": 1,
+      "due_date": "2026-07-15",
+      "amount": 100000,
+      "paid": 0,
+      "remaining": 100000,
+      "status": "pending",
+      "late_days": 0
+    }
+  ]
+}
+```
+
+---
+
+### 4.7 Payments (`/api/v1/payments`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `payments.read` | Query: `sale_id`, `customer_id`, `limit` | Array of payments |
+| `POST /` | POST | `payments.create` | `PaymentCreate` | Payment result |
+
+**PaymentCreate:**
+```json
+{
+  "idempotency_key": "string (8-80 chars, required)",
+  "sale_id": "number (required)",
+  "amount": "number (> 0)",
+  "payment_method": "cash | qi | transfer | zaincash | visa",
+  "reference_number": "string | null",
+  "source": "manual | api | external"  // default "manual"
+}
+```
+
+**Payment Response:**
+```json
+{
+  "id": 1,
+  "public_id": "uuid-string",
+  "receipt_number": "R-2026-000001",
+  "sale_id": 1,
+  "customer_id": 1,
+  "amount": 100000,
+  "fee_amount": 0,
+  "payment_method": "cash",
+  "status": "confirmed",
+  "allocations": [
+    {
+      "installment_number": 1,
+      "allocated_amount": 100000
+    }
+  ],
+  "plan_status": "active",
+  "sale_status": "active",
+  "replayed": false
+}
+```
+
+---
+
+### 4.8 Ledger (`/api/v1/ledger`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `ledger.read` | Query: `customer_id`, `limit` | Grouped transactions |
+| `GET /accounts` | GET | `ledger.read` | — | Account balances |
+
+**Ledger Entries Response:**
+```json
+[
+  {
+    "transaction_group_id": "uuid-string",
+    "reference_type": "sale",
+    "reference_id": 1,
+    "created_at": "2026-06-15T10:30:00+00:00",
+    "total": 1200000,
+    "lines": [
+      {
+        "account_code": "1100",
+        "account_name": "Accounts Receivable",
+        "account_name_ar": "الذمم المدينة",
+        "debit": 1200000,
+        "credit": 0,
+        "description": "AR on sale",
+        "customer_id": 1,
+        "sale_id": 1
+      },
+      {
+        "account_code": "4000",
+        "account_name": "Sales Revenue",
+        "account_name_ar": "إيرادات المبيعات",
+        "debit": 0,
+        "credit": 1200000,
+        "description": "sales revenue",
+        "customer_id": null,
+        "sale_id": 1
+      }
+    ]
+  }
+]
+```
+
+**Account Balances Response:**
+```json
+[
+  {
+    "code": "1000",
+    "name": "Cash",
+    "name_ar": "النقد",
+    "type": "asset",
+    "normal_balance": "debit",
+    "balance": 5000000
+  }
+]
+```
+
+---
+
+### 4.9 Dashboard (`/api/v1/dashboard`)
+
+| Endpoint | Method | Permission | Response |
+|----------|--------|------------|----------|
+| `GET /summary` | GET | `reports.read` | Dashboard KPIs |
+
+**Dashboard Response:**
+```json
+{
+  "total_outstanding": 4500000,
+  "total_cash_collected": 8500000,
+  "today_payments": 350000,
+  "overdue_count": 12,
+  "customers_count": 156,
+  "active_sales_count": 89
+}
+```
+
+---
+
+### 4.10 Notifications (`/api/v1/notifications`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /` | GET | `reports.read` | Query: `limit` | Array of notifications |
+
+**Notification Response:**
+```json
+[
+  {
+    "id": 1,
+    "customer_id": 1,
+    "customer_name": "Ali Hassan",
+    "channel": "whatsapp",
+    "message": "عزيزي Ali Hassan، القسط المستحق...",
+    "related_type": "overdue",
+    "related_id": 1,
+    "status": "pending",
+    "created_at": "2026-06-15T10:30:00+00:00"
+  }
+]
+```
+
+---
+
+### 4.11 Admin (`/api/v1`)
+
+| Endpoint | Method | Permission | Request | Response |
+|----------|--------|------------|---------|----------|
+| `GET /users` | GET | `users.manage` | — | Array of users |
+| `POST /users` | POST | `users.manage` | `UserCreate` | User |
+| `PATCH /users/{id}` | PATCH | `users.manage` | `UserUpdate` | User |
+| `POST /users/{id}/password` | POST | `users.manage` | `PasswordReset` | Status |
+| `GET /roles` | GET | `users.manage` | — | Array of roles |
+| `GET /permissions` | GET | `users.manage` | — | Array of permissions |
+
+---
+
+### 4.12 Account (`/api/v1`)
+
+| Endpoint | Method | Auth | Request | Response |
+|----------|--------|------|---------|----------|
+| `GET /me` | GET | Bearer | — | Current user |
+| `PATCH /me` | PATCH | Bearer | `ProfileUpdate` | Updated user |
+| `POST /me/password` | POST | Bearer | `PasswordChange` | Status |
+| `GET /tenant` | GET | Bearer | — | Tenant info |
+| `GET /settings` | GET | `settings.manage` | — | Settings dict |
+| `PUT /settings/{key}` | PUT | `settings.manage` | `SettingUpsert` | Setting |
+
+---
+
+## 5. PERMISSION SYSTEM (RBAC)
+
+### 5.1 Permission Codes
+
+| Code | Description |
+|------|-------------|
+| `customers.read` | View customers |
+| `customers.write` | Create/edit customers |
+| `products.read` | View products |
+| `products.write` | Create/edit products |
+| `sales.read` | View sales |
+| `sales.create` | Create sales |
+| `sales.cancel` | Cancel sales |
+| `plans.read` | View plans |
+| `plans.reschedule` | Reschedule plans |
+| `payments.read` | View payments |
+| `payments.create` | Record payments |
+| `payments.reverse` | Reverse payments |
+| `ledger.read` | View ledger |
+| `reports.read` | View reports/dashboard |
+| `users.manage` | Manage users |
+| `roles.manage` | Manage roles |
+| `settings.manage` | Manage tenant settings |
+
+### 5.2 System Roles (Seeded)
+
+| Role | Permissions |
+|------|-------------|
+| **admin** | ALL permissions |
+| **staff** | customers.read, customers.write, products.read, sales.read, sales.create, plans.read, payments.read, payments.create, reports.read |
+| **accountant** | sales.read, plans.read, payments.read, payments.reverse, ledger.read, reports.read |
+
+---
+
+## 6. CONSTRAINTS & VALIDATION RULES
+
+### 6.1 Monetary Values
+- **ALL money is integer** (BigInteger) — no decimals, no floats
+- Currency: IQD (Iraqi Dinar)
+- Values represent the smallest unit (fils), though typically treated as whole dinars
+
+### 6.2 Stock Management
+- Products have `stock_quantity` (aggregate of variants)
+- Variants have individual `stock_quantity`
+- On sale: deduct from variant first, then recalculate product aggregate
+- Stock cannot go negative (CHECK constraint)
+
+### 6.3 Soft Delete Pattern
+- All DATA tables have `is_deleted` + `deleted_at`
+- Partial unique indexes exclude deleted rows
+- No hard deletes in application code
+
+### 6.4 Idempotency
+- `SaleCreate` requires `idempotency_key` (8-80 chars)
+- `PaymentCreate` requires `idempotency_key`
+- Duplicate keys within tenant return existing record with `replayed: true`
+
+### 6.5 Sale Lifecycle
+```
+draft/active → active → completed
+                    ↘ cancelled
+```
+- Cash sales auto-complete
+- Installment sales complete when all installments fully paid
+
+### 6.6 Installment Plan Lifecycle
+```
+active → completed (all paid)
+     → defaulted (manual/admin)
+     → cancelled (sale cancelled)
+     → superseded (rescheduled)
+```
+
+---
+
+## 7. PAGINATION ENVELOPE
+
+All list endpoints return:
+```json
+{
+  "data": [...],
+  "page": 1,
+  "page_size": 50,
+  "total_count": 137,
+  "total_pages": 3
+}
+```
+
+Default `page_size`: 50 (customers), 100 (products)
+Max `page_size`: 200
+
+---
+
+## 8. ERROR RESPONSES
+
+Standard FastAPI HTTPException format:
+```json
+{
+  "detail": "error message"
+}
+```
+
+| Status | Trigger |
+|--------|---------|
+| 400 | Bad request (validation failure) |
+| 401 | Unauthorized (missing/invalid token) |
+| 403 | Forbidden (missing permission) |
+| 404 | Not found |
+| 409 | Conflict (business rule violation, duplicate) |
+| 500 | Ledger imbalance (critical invariant violation) |
+
+---
+
+## 9. SEQUENCE NUMBERING
+
+| Type | Prefix | Example |
+|------|--------|---------|
+| Sale | `S` | `S-2026-000042` |
+| Receipt | `R` | `R-2026-000015` |
+
+Format: `{PREFIX}-{YYYY}-{NNNNNN}` (zero-padded to 6 digits)
+
+---
+
+## 10. STATIC FILE SERVING
+
+- Product images served from `/static/uploads/<tenant_id>/<product_id>/<uuid>.jpg`
+- Thumbnails: `<uuid>_thumb.jpg`
+- Max 8 images per product
+- Images are center-cropped to 1:1 square
+- Full: 800px, Thumb: 300px
+
+---
+
+## 11. CRITICAL FRONTEND IMPLICATIONS
+
+### 11.1 Money Handling
+- **Never use floating-point arithmetic** for money
+- All prices, payments, balances are integers
+- Format for display: `value.toLocaleString('ar-IQ') + ' د.ع'`
+
+### 11.2 Installment Calculation (Client-Side Preview)
+```typescript
+function calculateInstallments(
+  totalPrice: number,
+  downPayment: number,
+  months: number,
+  frequency: 'weekly' | 'monthly',
+  startDate: Date
+): InstallmentPreview[] {
+  const principal = totalPrice - downPayment;
+  const base = Math.floor(principal / months);
+  const remainder = principal - base * months;
+  
+  if (base <= 0) throw new Error("Installment rounds to zero");
+  
+  const installments: InstallmentPreview[] = [];
+  for (let k = 0; k < months; k++) {
+    installments.push({
+      installmentNumber: k + 1,
+      dueDate: calculateDueDate(startDate, k, frequency),
+      amount: base + (k === months - 1 ? remainder : 0),
+    });
+  }
+  return installments;
+}
+```
+
+### 11.3 FIFO Payment Visualization
+- Display installments in order
+- Show `paid / amount` progress per installment
+- When recording payment, show cascading allocation:
+  1. Fill installment 1 partially/fully
+  2. Overflow to installment 2
+  3. Continue until payment exhausted
+
+### 11.4 Real-Time Considerations
+- Use TanStack Query with appropriate stale times
+- Dashboard summary should refetch on window focus
+- Payment recording should invalidate: `['sale', saleId]`, `['customer', customerId]`, `['dashboard']`, `['ledger']`
+
+### 11.5 Arabic RTL Support
+- All entities have `name_ar` fields
+- Currency is IQD (د.ع)
+- Date format: `YYYY-MM-DD` (ISO) for API, display localized
+- Numbers should use Arabic-Indic numerals where appropriate
+
+---
+
+This specification is derived 100% from the actual codebase and is ready for production frontend implementation.
